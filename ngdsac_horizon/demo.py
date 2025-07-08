@@ -3,21 +3,17 @@ import numpy as np
 
 from torchvision import transforms
 
-from skimage import color
 from skimage.io import imsave
-from skimage.draw import line, set_color, circle
+from skimage.draw import line, set_color, ellipse
 
-from model import Model
-
-import time
-import warnings
 import argparse
 import os
 
-from ngdsac import NGDSAC
-from loss import Loss
+from ngdsac_horizon.horizon_estimator import HorizonEstimator
 
 import cv2
+
+device = torch.accelerator.current_accelerator().type if torch.accelerator.is_available() else "cpu"
 
 parser = argparse.ArgumentParser(description='Estimate horizon lines using a trained (NG-)DSAC network.', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
@@ -25,7 +21,7 @@ parser = argparse.ArgumentParser(description='Estimate horizon lines using a tra
 parser.add_argument('input', type=str,
 	help='input file to process, any image or video format supported by OpenCV')
 
-parser.add_argument('--model', '-m', default='models/weights_ngdsac_pretrained.net', 
+parser.add_argument('--model', '-m', default=None, 
 	help='a trained network')
 
 parser.add_argument('--capacity', '-c', type=int, default=4, 
@@ -60,69 +56,34 @@ opt = parser.parse_args()
 output_folder = 'out_' + opt.input
 if not os.path.isdir(output_folder): os.makedirs(output_folder)
 
-# setup ng dsac estimator
-ngdsac = NGDSAC(opt.hypotheses, opt.inlierthreshold, opt.inlierbeta, opt.inlieralpha, Loss(opt.imagesize), 1)
+horizon_estimator = HorizonEstimator(
+	capacity=opt.capacity,
+	imagesize=opt.imagesize,
+	inlierthreshold=opt.inlierthreshold,
+	inlierbeta=opt.inlierbeta,
+	inlieralpha=opt.inlieralpha,
+	hypotheses=opt.hypotheses,
+	model=opt.model,
+	uniform=opt.uniform,
+	device=device,
+)
 
-# load network
-nn = Model(opt.capacity)
-nn.load_state_dict(torch.load(opt.model))
-nn.eval()
-nn = nn.cuda()
 
-
-def process_frame(image):
-	'''
+def process_and_draw_frame(image):
+	"""
 	Estimate horizon line for an image and return a visualization.
 
 	image -- 3 dim numpy image tensor
-	'''
+	"""
 
-	# determine image scaling factor
-	image_scale = max(image.shape[0], image.shape[1])
-	image_scale = opt.imagesize / image_scale 
+	image = transforms.functional.to_tensor(image)  # convert to tensor
 
-	# convert image to RGB
-	if len(image.shape) < 3:
-		image = color.gray2rgb(image)
+	est_parameters, score, info = horizon_estimator.process_image(image)
 
-	# store original image dimensions		
-	src_h = int(image.shape[0] * image_scale)
-	src_w = int(image.shape[1] * image_scale)
-
-	# resize and to gray scale
-	image = transforms.functional.to_pil_image(image)
-	image = transforms.functional.resize(image, (src_h, src_w))
-	image = transforms.functional.adjust_saturation(image, 0)
-	image = transforms.functional.to_tensor(image)
-
-	# make image square by zero padding
-	padding_left = int((opt.imagesize - image.size(2)) / 2)
-	padding_right = opt.imagesize - image.size(2) - padding_left
-	padding_top = int((opt.imagesize - image.size(1)) / 2)
-	padding_bottom = opt.imagesize - image.size(1) - padding_top
-
-	padding = torch.nn.ZeroPad2d((padding_left, padding_right, padding_top, padding_bottom))
-	image = padding(image)
-
-	image_src = image.clone().unsqueeze(0)
-
-	# normalize image (mean and variance), values estimated offline from HLW training set
-	img_mask = image.sum(0) > 0
-	image[:,img_mask] -= 0.45
-	image[:,img_mask] /= 0.25
-	image = image.unsqueeze(0).cuda()
-
-	with torch.no_grad():
-		#predict data points and neural guidance
-		points, log_probs = nn(image)
-	
-		if opt.uniform:
-			# overwrite neural guidance with uniform sampling probabilities
-			log_probs.fill_(1/log_probs.size(1))
-			log_probs = torch.log(log_probs)
-
-		# fit line with NG-DSAC, providing dummy ground truth labels
-		ngdsac(points, log_probs, torch.zeros((1,2)), torch.zeros((1)), torch.ones((1)), torch.ones((1))) 
+	image_src = info["img_src"]
+	points = info["points"]
+	log_probs = info["log_probs"]
+	batch_inliers = info["batch_inliers"]
 
 	def draw_line(data, lX1, lY1, lX2, lY2, clr):
 		'''
@@ -200,20 +161,17 @@ def process_frame(image):
 				# draw point
 				r = int(points[i, 0, idx] * opt.imagesize)
 				c = int(points[i, 1, idx] * opt.imagesize)
-				rr, cc = circle(r, c, 2)
+				rr, cc = ellipse((r, r), c, 2)
 				set_color(data[i], (rr, cc), clr)
 
 		return data
 
-	# normalized inlier score of the estimated line
-	score = ngdsac.batch_inliers[0].sum() / points.shape[2]
+	image_src = image_src.cpu().permute(0, 2, 3, 1).numpy()  # Torch to Numpy
+	viz_probs = image_src.copy() * 0.2  # make a faint copy of the input image
 
-	image_src = image_src.cpu().permute(0,2,3,1).numpy() #Torch to Numpy
-	viz_probs = image_src.copy() * 0.2 # make a faint copy of the input image
-	
 	# draw estimated line
 	if score > opt.scorethreshold:
-		image_src = draw_models(ngdsac.est_parameters, clr=(0,0,1), data=image_src)
+		image_src = draw_models(est_parameters, clr=(0, 0, 1), data=image_src)
 
 	viz = [image_src]
 
@@ -222,12 +180,12 @@ def process_frame(image):
 
 		# draw faint estimated line 
 		viz_score = viz_probs.copy()
-		viz_probs = draw_models(ngdsac.est_parameters, clr=(0.3,0.3,0.3), data=viz_probs)
+		viz_probs = draw_models(est_parameters, clr=(0.3, 0.3, 0.3), data=viz_probs)
 		viz_inliers = viz_probs.copy()
 
 		# draw predicted points with neural guidance and soft inlier count, respectively
 		viz_probs = draw_wpoints(points, viz_probs, weights=torch.exp(log_probs), clrmap=cv2.COLORMAP_PLASMA)
-		viz_inliers = draw_wpoints(points, viz_inliers, weights=ngdsac.batch_inliers, clrmap=cv2.COLORMAP_WINTER)
+		viz_inliers = draw_wpoints(points, viz_inliers, weights=batch_inliers, clrmap=cv2.COLORMAP_WINTER)
 
 		# create a explicit color map for visualize score of estimate line
 		color_map = np.arange(256).astype('u1')
@@ -238,11 +196,12 @@ def process_frame(image):
 		score = int(score*100) #using only the first portion of HSV to get a nice (red, yellow, green) gradient
 		clr = color_map[score, 0] / 255
 
-		viz_score = draw_models(ngdsac.est_parameters, clr=clr, data=viz_score)
+		viz_score = draw_models(est_parameters, clr=clr, data=viz_score)
 
 		viz = viz + [viz_probs, viz_inliers, viz_score]
 
-	#undo zero padding of inputs
+	# undo zero padding of inputs
+	padding_left, padding_right, padding_top, padding_bottom = info["padding"]
 	if padding_left > 0:
 		viz = [img[:,:,padding_left:,:] for img in viz]
 	if padding_right > 0:
@@ -263,9 +222,9 @@ def process_frame(image):
 image = cv2.imread(opt.input)
 
 if image is not None:
-	#success, it was an image
-	viz = process_frame(image)
-	imsave(output_folder + '/result.png', viz)
+	# success, it was an image
+	viz = process_and_draw_frame(image)
+	imsave(output_folder + "/result.png", viz)
 
 else:
 	#failure, try interpreting it as video
@@ -279,9 +238,9 @@ else:
 			break
 
 		print("Processing frame %5d." % iteration)
-	
-		viz = process_frame(image)
-		imsave(output_folder + '/frame_' + str(iteration).zfill(5) + '.png', viz)
+
+		viz = process_and_draw_frame(image)
+		imsave(output_folder + "/frame_" + str(iteration).zfill(5) + ".png", viz)
 
 		iteration = iteration + 1
 

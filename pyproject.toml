@@ -1,0 +1,17 @@
+[project]
+name = "ngdsac_horizon"
+version = "0.1.0"
+description = "Neural-Guided, Differentiable RANSAC for Horizon Line Estimation"
+authors = []
+dependencies = ["torch", "torchvision", "numpy", "opencv-python", "scikit-image"]
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+exclude = ["images"]
+
+[tool.setuptools]
+include-package-data = true

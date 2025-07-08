@@ -1,5 +1,7 @@
 # Neural-Guided, Differentiable RANSAC for Horizon Line Estimation
 
+__(Forked for usage as a package)__
+
 - [Introduction](#introduction)
 - [Quick Start: Demo Script](#quick-start-demo-script)
 - [HLW Dataset](#hlw-dataset)

@@ -1,14 +1,14 @@
 import torch
 import numpy as np
 
-from hlw_dataset import HLWDataset
-from model import Model
+from ngdsac_horizon.hlw_dataset import HLWDataset
+from ngdsac_horizon.model import Model
 
 import time
 import argparse
 
-from ngdsac import NGDSAC
-from loss import Loss
+from ngdsac_horizon.ngdsac import NGDSAC
+from ngdsac_horizon.loss import Loss
 
 parser = argparse.ArgumentParser(description='Test a trained horizon line estimation network (DSAC or NG-DSAC).', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 

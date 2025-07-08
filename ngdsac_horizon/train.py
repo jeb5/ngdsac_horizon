@@ -2,19 +2,14 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from hlw_dataset import HLWDataset
-from model import Model
-
-import torchvision.utils as vutils
-from skimage.io import imsave
-import skimage.io as io
+from ngdsac_horizon.hlw_dataset import HLWDataset
+from ngdsac_horizon.model import Model
 
 import time
-import warnings
 import argparse
 
-from ngdsac import NGDSAC
-from loss import Loss
+from ngdsac_horizon.ngdsac import NGDSAC
+from ngdsac_horizon.loss import Loss
 
 parser = argparse.ArgumentParser(description='Train a horizon line estimation network on the HLW dataset using (NG-)DSAC.', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
